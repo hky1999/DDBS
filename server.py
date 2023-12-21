@@ -1,7 +1,11 @@
+#!/usr/bin/env python3
+# encoding: utf-8
+
 import redis
 import pymongo
 import json
 import os
+import hdfs
 
 import config
 from tqdm import tqdm
@@ -14,6 +18,11 @@ def init_redis(host, port):
 def init_mongo(host, port):
     conn = pymongo.MongoClient(host=host, port=port)
     return conn['db']
+
+def init_hdfs():
+    client = hdfs.Client('http://127.0.0.1:9870') # hdfs 3.x
+    client.makedirs('/data')
+    print(client.list('/'))
 
 def init():
     handles = {}
@@ -28,15 +37,6 @@ def init():
         handles[name] = handle
     return handles
 
-
-# def init_data(cache, dbms):
-#     user = dbms['user']
-#     article = dbms['article']
-
-#     x = user.insert_one({'name':'A', 'gender': 'B'})
-
-#     cache.set('user', json.dumps({'name':'A', 'gender': 'B'}))
-#     print(cache.get('user'))
 
 def map_document(doc: dict, mapping: dict):
     return { k: (mapping[k](v) if k in mapping else v) for k, v in doc.items() }
