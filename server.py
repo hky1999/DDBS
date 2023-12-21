@@ -6,6 +6,7 @@ import pymongo
 import json
 import os
 import hdfs
+import time
 
 import config
 from tqdm import tqdm
@@ -19,10 +20,28 @@ def init_mongo(host, port):
     conn = pymongo.MongoClient(host=host, port=port)
     return conn['db']
 
-def init_hdfs():
-    client = hdfs.Client('http://127.0.0.1:9870') # hdfs 3.x
-    client.makedirs('/data')
-    print(client.list('/'))
+def init_hdfs(host, port):
+    client = hdfs.Client(url=f"http://{host}:{port}")
+    client.makedirs("/data")
+    client.makedirs("/data/image")
+    client.makedirs("/data/video")
+    client.upload(
+        hdfs_path="/data/image",
+        local_path=os.path.join(db_generation, "image/"),
+        overwrite=True,
+        cleanup=True,
+        n_threads=8,
+        chunk_size=2**20,
+    )
+    print(client.list("/data/image"))
+    client.upload(
+        hdfs_path="/data/video",
+        local_path=os.path.join(db_generation, "video/"),
+        overwrite=True,
+        cleanup=True,
+    )
+    print(client.list("/data/video"))
+    return client
 
 def init():
     handles = {}
@@ -32,6 +51,8 @@ def init():
             handle = init_redis(host, port)
         elif name.startswith('dbms'):
             handle = init_mongo(host, port)
+        elif name.startswith('hdfs'):
+            handle = init_hdfs(host, port)
         else:
             assert 0
         handles[name] = handle

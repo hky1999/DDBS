@@ -1,7 +1,13 @@
 #!/bin/bash
 
-docker kill cache0
-docker kill dbms0
+docker stop cache0
+docker stop dbms0
 
-docker kill cache1
-docker kill dbms1
+docker stop cache1
+docker stop dbms1
+
+cd hadoop
+docker-compose down --volumes
+cd ..
+
+docker ps -a

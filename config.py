@@ -2,7 +2,7 @@
 localhost = '127.0.0.1'
 
 component_names = [
-    'dbms0', 'dbms1', 'cache0', 'cache1'
+    'dbms0', 'dbms1', 'cache0', 'cache1', 'hdfs'
 ]
 
 component_addresses = {
@@ -10,6 +10,7 @@ component_addresses = {
     'dbms0': (localhost, 20001),
     'cache1': (localhost, 20002),
     'dbms1': (localhost, 20003),
+    'hdfs': (localhost, 9870),
 }
 
 sharding_rules = {
