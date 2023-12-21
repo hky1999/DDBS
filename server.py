@@ -1,8 +1,12 @@
+#!/usr/bin/env python3
+# encoding: utf-8
+
 import redis
 import pymongo
 import json
 import sys
 import os
+import hdfs
 
 localhost = '127.0.0.1'
 db_generation = os.getcwd() + 'db-generation'
@@ -13,6 +17,11 @@ def init_redis(port):
 def init_mongo(port):
     conn = pymongo.MongoClient(host=localhost, port=port)
     return conn['db']
+
+def init_hdfs():
+    client = hdfs.Client('http://127.0.0.1:9870') # hdfs 3.x
+    client.makedirs('/data')
+    print(client.list('/'))
 
 def init_data(cache, dbms):
     user = dbms['user']
@@ -32,3 +41,6 @@ if __name__ == "__main__":
     # Machine 1
     cache1 = init_redis(20002)
     dbms1 = init_mongo(20003)
+
+    # Hadoop FS
+    init_hdfs()
