@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 # encoding: utf-8
 
+import argparse
 import redis
 import pymongo
 import json
 import os
 import hdfs
-import time
 
 import config
 from tqdm import tqdm
+# from concurrent.futures import ThreadPoolExecutor, as_completed
 
 db_generation = 'db-generation'
 
@@ -21,27 +22,7 @@ def init_mongo(host, port):
     return conn['db']
 
 def init_hdfs(host, port):
-    client = hdfs.Client(url=f"http://{host}:{port}")
-    client.makedirs("/data")
-    client.makedirs("/data/image")
-    client.makedirs("/data/video")
-    client.upload(
-        hdfs_path="/data/image",
-        local_path=os.path.join(db_generation, "image/"),
-        overwrite=True,
-        cleanup=True,
-        n_threads=8,
-        chunk_size=2**20,
-    )
-    print(client.list("/data/image"))
-    client.upload(
-        hdfs_path="/data/video",
-        local_path=os.path.join(db_generation, "video/"),
-        overwrite=True,
-        cleanup=True,
-    )
-    print(client.list("/data/video"))
-    return client
+    return hdfs.Client(url=f"http://{host}:{port}")
 
 def init():
     handles = {}
@@ -185,13 +166,12 @@ def populate_new_collections(db_sites, article_placement):
                 db_sites[site]['be_read'].insert_one(item)
     
     # populate popular_rank collection
-    granularities = ((1, 'daily'), (7, 'weekly'), (30, 'monthly'))
     top_k = 5
     query_site = 'dbms1' # hard-coded, dbms1 has full `be_read` collection
     be_read_coll = db_sites[query_site]['be_read']
     location_map = config.sharding_rules['popular_rank'][1]
     for ub in tqdm(range(min_timestamp + interval_ms, max_timestamp, interval_ms)):
-        for gran_num, gran_str in granularities:
+        for gran_num, gran_str in config.temporal_granularities:
             lb = max(ub - gran_num * interval_ms, min_timestamp)
 
             ub_results = be_read_coll.find({'timestamp': ub})
@@ -217,7 +197,7 @@ def populate_new_collections(db_sites, article_placement):
                 db_sites[site]['popular_rank'].insert_one(item)
 
 
-def init_database(handles):
+def init_database_tables(handles):
     dbs = { name: handle for name, handle in handles.items() if name.startswith('dbms') }
     
     user_transforms = to_int_transforms(['timestamp', 'uid', 'obtainedCredits'])
@@ -232,10 +212,154 @@ def init_database(handles):
     populate_new_collections(dbs, article_placement)
 
 
+def init_hdfs_content(client: hdfs.Client):
+    client.makedirs("/data")
+    client.makedirs("/data/image")
+    client.makedirs("/data/video")
+    client.upload(
+        hdfs_path="/data/image",
+        local_path=os.path.join(db_generation, "image/"),
+        overwrite=True,
+        cleanup=True,
+        n_threads=8,
+        chunk_size=2**20,
+    )
+    print(client.list("/data/image"))
+    client.upload(
+        hdfs_path="/data/video",
+        local_path=os.path.join(db_generation, "video/"),
+        overwrite=True,
+        cleanup=True,
+    )
+    print(client.list("/data/video"))
+
+
+def query_single_table(handles, table_name, condition, remove_id=True):
+    # TODO: add cache support
+    results = {}
+    for dbms, cache in config.dbms_nodes:
+        cursor = handles[dbms][table_name].find(condition)
+        for item in cursor:
+            obj_id = item['_id']
+            if remove_id:
+                del item['_id']
+            results[obj_id] = item
+    return list(results.values())
+
+
+def get_all_articles(handles):
+    return query_single_table(handles, 'article', None, True)
+
+
+def query_user_read(handles, read_condition):
+    # TODO: add cache support
+    articles = get_all_articles(handles)
+
+    user_reads = []
+    for dbms, cache in config.dbms_nodes:
+        handles[dbms].drop_collection('tmp_article')
+        tmp_articles = handles[dbms]['tmp_article']
+        # tmp_articles.create_index('aid') # might not be very useful here
+        tmp_articles.insert_many(articles)
+
+        cursor = handles[dbms]['read'].aggregate([
+            {
+                '$match': read_condition
+            },
+            {
+                '$lookup': {
+                    'from': 'tmp_article',
+                    'localField': 'aid',
+                    'foreignField': 'aid',
+                    'as': 'articles',
+                    # 'pipeline': [{'$documents': articles}], # NOTE: extremely slow, don't use
+                }
+            },
+            {
+                '$group': {
+                    '_id': '$uid',
+                    'readList': {
+                        '$push': {
+                            'id': '$id',
+                            'article': {'$arrayElemAt': ['$articles', 0]},
+                            # more fields from read object
+                        }
+                    },
+                }
+            },
+            {
+                '$lookup': {
+                    'from': 'user',
+                    'localField': '_id',
+                    'foreignField': 'uid',
+                    'as': 'user',
+                }
+            },
+        ])
+        for item in cursor:
+            user_reads.append(item)
+    return user_reads
+
+
+def query_popular_articles(handles, timestamp, top_k=5):
+    # solution 1: query be-read table
+    interval_ms = 24 * 60 * 60 * 1000
+    # timestamp = timestamp // interval_ms * interval_ms
+
+    def get_max_timestamp_lte(coll, limit):
+        max_ts_cursor = coll.aggregate([
+            { 
+                '$match': {'timestamp': {'$lte': limit}}
+            },
+            {
+                '$group': {
+                    '_id': None,
+                    'maxTs': {'$max': '$timestamp'},
+                }
+            },
+        ])
+        max_ts_result = list(max_ts_cursor)
+        if len(max_ts_result) > 0:
+            return max_ts_result[0]['maxTs']
+        return None
+
+    # TODO: fix this hard-coded dbms1
+    be_read_coll = handles['dbms1']['be_read'] # the full be_read collection
+    read_nums_ub = {}
+    max_ts = get_max_timestamp_lte(be_read_coll, timestamp)
+    if max_ts is not None:
+        for item in be_read_coll.find({'timestamp': max_ts}):
+            read_nums_ub[item['aid']] = item['readNum']
+
+    results = {}
+    articles = { item['aid']: item for item in get_all_articles(handles) }
+    for gran_val, gran_str in config.temporal_granularities:
+        read_nums = { aid: read_num for aid, read_num in read_nums_ub.items() }
+        max_ts = get_max_timestamp_lte(be_read_coll, timestamp - interval_ms * gran_val)
+        if max_ts is not None:
+            for item in be_read_coll.find({'timestamp': max_ts}):
+                read_nums[item['aid']] -= item['readNum']
+            
+        article_info = sorted(read_nums.items(), key=lambda t: t[1], reverse=True)
+        article_info = article_info[:top_k]
+
+        results[gran_str] = [
+            {'count': count, 'article': articles[aid]} for aid, count in article_info
+        ]
+    return results
+
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--init', action='store_true', required=False, default=False,
+                        help='if set, bulk insert data into databases & hdfs')
+    args = parser.parse_args()
+
     handles = init()
 
-    init_database(handles)
+    if args.init:
+        init_database_tables(handles)
+        init_hdfs_content(handles['hdfs'])
 
     # from IPython import embed
     # embed()
