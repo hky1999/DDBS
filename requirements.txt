@@ -2,3 +2,5 @@ redis
 pymongo
 hdfs
 tqdm
+flask
+pytest
