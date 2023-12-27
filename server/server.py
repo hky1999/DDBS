@@ -270,9 +270,11 @@ def dbms_to_cache(dbms):
         if dbms_ == dbms:
             return cache
 
+
 def query_cache(handles, key):
     for _, cache in config.dbms_nodes:
         return handles[cache].get(key)
+
 
 def query_single_table(handles, table_name, condition, remove_id=True):
     # TODO: add cache support
@@ -431,14 +433,35 @@ def ddbs_get_article(aid):
             handles[dbms_to_cache(site)].set(f"/article/{aid}", str(article))
     return article
 
+
 @DDBS.route("/user_read/<int:uid>", methods=["GET"])
 def ddbs_get_user_read(uid):
     user_reads = query_user_read(handles, {"uid": uid})
-    return user_reads
+    return ""
+
 
 @DDBS.route("/popular", methods=["GET"])
 def ddbs_get_popular_rank():
     return query_popular_articles(handles, 1506333287000)
+
+
+@DDBS.route("/status", methods=["GET"])
+def ddbs_get_status():
+    status_list = []
+    for name in config.component_names:
+        host, port = config.component_addresses[name]
+        if name.startswith("dbms"):
+            status = {}
+            status["location"] = name
+            status["collections"] = {}
+            for collection in handles[name].list_collection_names():
+                status["collections"][collection] = handles[name][
+                    collection
+                ].count_documents({})
+            status_list.append(status)
+
+    print(json.dumps(status_list, indent=4, separators=(",", ": ")))
+    return status_list
 
 
 if __name__ == "__main__":
