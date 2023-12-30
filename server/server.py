@@ -265,36 +265,62 @@ def init_hdfs_content(client: hdfs.Client):
     print(client.list("/data/video"))
 
 
-def dbms_to_cache(dbms):
-    for dbms_, cache in config.dbms_nodes:
-        if dbms_ == dbms:
-            return cache
-
-
-def query_cache(handles, key):
-    for _, cache in config.dbms_nodes:
-        return handles[cache].get(key)
-
-
-def query_single_table(handles, table_name, condition, remove_id=True):
-    # TODO: add cache support
+def query_single_table_direct(handles, table_name, condition=None, id_key="_id"):
+    # NOTE: bypass redis, query mongodb directly
     results = {}
     for dbms, cache in config.dbms_nodes:
         cursor = handles[dbms][table_name].find(condition)
         for item in cursor:
-            obj_id = item["_id"]
-            if remove_id:
-                del item["_id"]
-            results[obj_id] = item
+            item["_id"] = str(item["_id"])
+            results[item[id_key]] = item
+    return list(results.values())
+
+
+def query_single_table_cached(handles, table_name, condition=None, id_key="_id"):
+    # cache is not used when doing full table retrieval
+    if condition is None:
+        return query_single_table_direct(handles, table_name, condition, id_key)
+    
+    assert isinstance(condition, (int, str, dict))
+    # int/str: get by id, dict: complex query
+    if not isinstance(condition, dict): # id query
+        assert id_key != "_id" # TODO: raise exception instead
+        redis_hash_key = table_name
+        redis_hash_field = str(condition)
+        condition = {id_key: condition}
+    else: # complex query
+        redis_hash_key = table_name + "_query"
+        redis_hash_field = json.dumps(condition)
+    
+    results = {}
+    for dbms, cache in config.dbms_nodes:
+        redis = handles[cache]
+        cached = redis.hget(redis_hash_key, redis_hash_field)
+        
+        if cached is not None:
+            local_items = json.loads(cached)
+        else:
+            local_items = []
+            for item in handles[dbms][table_name].find(condition):
+                item["_id"] = str(item["_id"])
+                local_items.append(item)
+        
+            redis.hset(redis_hash_key, redis_hash_field, json.dumps(local_items))
+        
+        for item in local_items:
+            results[item[id_key]] = item
     return list(results.values())
 
 
 def get_all_articles(handles):
-    return query_single_table(handles, "article", None, True)
+    return query_single_table_direct(handles, "article", None, "aid")
 
 
 def query_user_read(handles, read_condition):
-    # TODO: add cache support
+    # NOTE: 涉及多表join，暂时没走缓存
+    # 由于article跟read的分表方式不一致，所以先获取了全部article作为临时表参与lookup
+    # 而user与read分表方式一致，所以可以做本地lookup
+    # 且因为划分无重叠，最终没有做按id合并的步骤
     articles = get_all_articles(handles)
 
     user_reads = []
@@ -402,36 +428,26 @@ def ddbs_get_home():
 
 @DDBS.route("/users", methods=["GET"])
 def ddbs_get_all_users():
-    user = query_single_table(handles, "user", None)
-    return user
+    users = query_single_table_direct(handles, "user", None, "uid")
+    return users
 
 
 @DDBS.route("/user/<int:uid>", methods=["GET"])
 def ddbs_get_user(uid):
-    user = query_cache(handles, f"/user/{uid}")
-    if user is None:
-        user = query_single_table(handles, "user", {"uid": uid})[0]
-        location_map = config.sharding_rules["user"][1]
-        for site in location_map[user["region"]]:
-            handles[dbms_to_cache(site)].set(f"/user/{uid}", str(user))
-    return user
+    users = query_single_table_cached(handles, "user", uid, "uid")
+    return users[0] if len(users) > 0 else None
 
 
 @DDBS.route("/articles", methods=["GET"])
 def ddbs_get_all_articles():
-    article = query_single_table(handles, "article", None)
-    return article
+    articles = query_single_table_direct(handles, "article", None, "aid")
+    return articles
 
 
 @DDBS.route("/article/<int:aid>", methods=["GET"])
 def ddbs_get_article(aid):
-    article = query_cache(handles, f"/article/{aid}")
-    if article is None:
-        article = query_single_table(handles, "article", {"aid": aid})[0]
-        location_map = config.sharding_rules["article"][1]
-        for site in location_map[article["category"]]:
-            handles[dbms_to_cache(site)].set(f"/article/{aid}", str(article))
-    return article
+    articles = query_single_table_cached(handles, "article", aid, "aid")
+    return articles[0] if len(articles) > 0 else None
 
 
 @DDBS.route("/user_read/<int:uid>", methods=["GET"])
