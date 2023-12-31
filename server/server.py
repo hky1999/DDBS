@@ -8,7 +8,8 @@ import json
 import os
 import hdfs
 from tqdm import tqdm
-from flask import Flask, request
+from flask import Flask
+from bson.objectid import ObjectId
 
 from server import config
 
@@ -431,6 +432,25 @@ def query_popular_articles(handles, timestamp, top_k=5):
     return results
 
 
+def convert_object_id(obj):
+    # by default ObjectId is not JSON serializable
+    # this function recursively converts ObjectId values in `obj` to their string forms
+    keys = None
+    if isinstance(obj, list):
+        keys = range(len(obj))
+    elif isinstance(obj, dict):
+        keys = obj.keys()
+
+    if keys is not None:
+        for k in keys:
+            v = obj[k]
+            if isinstance(v, ObjectId):
+                obj[k] = str(v)
+            elif isinstance(v, (list, dict)):
+                obj[k] = convert_object_id(v)
+    return obj
+
+
 DDBS = Flask(__name__)
 handles = init()
 
@@ -449,7 +469,7 @@ def ddbs_get_all_users():
 @DDBS.route("/user/<int:uid>", methods=["GET"])
 def ddbs_get_user(uid):
     users = query_single_table_cached(handles, "user", uid, "uid")
-    return users[0] if len(users) > 0 else None
+    return users
 
 
 @DDBS.route("/articles", methods=["GET"])
@@ -461,36 +481,39 @@ def ddbs_get_all_articles():
 @DDBS.route("/article/<int:aid>", methods=["GET"])
 def ddbs_get_article(aid):
     articles = query_single_table_cached(handles, "article", aid, "aid")
-    return articles[0] if len(articles) > 0 else None
+    return articles
 
 
 @DDBS.route("/user_read/<int:uid>", methods=["GET"])
 def ddbs_get_user_read(uid):
     user_reads = query_user_read(handles, {"uid": uid})
-    return ""
+    return convert_object_id(user_reads)
 
 
-@DDBS.route("/popular", methods=["GET"])
-def ddbs_get_popular_rank():
-    return query_popular_articles(handles, 1506333287000)
+@DDBS.route("/popular/<int:timestamp_ms>", methods=["GET"])
+def ddbs_get_popular_rank(timestamp_ms):
+    return query_popular_articles(handles, timestamp_ms)
 
 
 @DDBS.route("/status", methods=["GET"])
 def ddbs_get_status():
     status_list = []
-    for name in config.component_names:
-        host, port = config.component_addresses[name]
-        if name.startswith("dbms"):
-            status = {}
-            status["location"] = name
-            status["collections"] = {}
-            for collection in handles[name].list_collection_names():
-                status["collections"][collection] = handles[name][
-                    collection
-                ].count_documents({})
-            status_list.append(status)
+    for site, cache in config.dbms_nodes:
+        db, kv = handles[site], handles[cache]
+        
+        collection_sizes = {}
+        cache_sizes = {}
+        for coll_name in db.list_collection_names():
+            collection_sizes[coll_name] = db[coll_name].count_documents({})
+            if not coll_name.startswith("tmp"):
+                item_cache_key, query_cache_key = coll_name, coll_name + "_query"
+                cache_sizes[item_cache_key] = kv.hlen(item_cache_key) # item cache
+                cache_sizes[query_cache_key] = kv.hlen(query_cache_key) # query cache
 
-    print(json.dumps(status_list, indent=4, separators=(",", ": ")))
+        status = dict(site=site, collections=collection_sizes, caches=cache_sizes)
+        status_list.append(status)
+
+    #print(json.dumps(status_list, indent=4, separators=(",", ": ")))
     return status_list
 
 
