@@ -7,6 +7,8 @@ import pymongo
 import json
 import os
 import hdfs
+import base64
+
 from tqdm import tqdm
 from flask import Flask
 from bson.objectid import ObjectId
@@ -259,6 +261,7 @@ def init_database_tables(handles):
 
 
 def init_hdfs_content(client: hdfs.Client):
+    '''
     client.makedirs("/data")
     client.makedirs("/data/image")
     client.makedirs("/data/video")
@@ -278,6 +281,26 @@ def init_hdfs_content(client: hdfs.Client):
         cleanup=True,
     )
     print(client.list("/data/video"))
+    '''
+    hdfs_path = "/data/articles"
+    local_path = os.path.join(db_generation, "articles/")
+    client.makedirs(hdfs_path)
+
+    total_files = sum(len(files) for path, dirs, files in os.walk(local_path))
+    with tqdm(range(total_files)) as t:
+        def progress(path, n):
+            if n == -1:
+                t.update(1)
+
+        client.upload(
+            hdfs_path=hdfs_path, 
+            local_path=local_path,
+            overwrite=True,
+            cleanup=True,
+            n_threads=16,
+            progress=progress,
+            chunk_size=2**20,
+        )
 
 
 def query_single_table_direct(handles, table_name, condition=None, id_key="_id"):
@@ -432,6 +455,22 @@ def query_popular_articles(handles, timestamp, top_k=5):
     return results
 
 
+def fetch_article_details(hdfs: hdfs.Client, article):
+    details = {}
+    fields = ("text", "image", "video")
+    aid = article["aid"]
+    path_prefix = f"/data/articles/article{aid}/"
+    for field in fields:
+        for filename in article[field].split(','):
+            if len(filename) == 0:
+                continue
+            with hdfs.read(os.path.join(path_prefix, filename)) as reader:
+                content = reader.read()
+            encoded = base64.encodebytes(content)
+            details[filename] = encoded.decode("ascii")
+    return details
+
+
 def convert_object_id(obj):
     # by default ObjectId is not JSON serializable
     # this function recursively converts ObjectId values in `obj` to their string forms
@@ -492,7 +531,12 @@ def ddbs_get_user_read(uid):
 
 @DDBS.route("/popular/<int:timestamp_ms>", methods=["GET"])
 def ddbs_get_popular_rank(timestamp_ms):
-    return query_popular_articles(handles, timestamp_ms)
+    popular_info = query_popular_articles(handles, timestamp_ms)
+    # NOTE: resource files are base64 encoded and they are large
+    for temporal_gran, article_info in popular_info.items():
+        for item in article_info:
+            item["details"] = fetch_article_details(handles['hdfs'], item["article"])
+    return popular_info
 
 
 @DDBS.route("/status", methods=["GET"])
