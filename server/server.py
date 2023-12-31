@@ -15,6 +15,15 @@ from server import config
 db_generation = "db-generation"
 
 
+class IdCounter:
+    def __init__(self):
+        self.v = 0
+    
+    def incr(self) -> int:
+        self.v += 1
+        return self.v
+
+
 def init_redis(host, port):
     return redis.Redis(host=host, port=port, decode_responses=True)
 
@@ -142,6 +151,7 @@ def populate_new_collections(db_sites, article_placement):
     max_timestamp = (max_timestamp + interval_ms - 1) // interval_ms * interval_ms
 
     # populate be-read collection
+    be_read_id = IdCounter()
     select = lambda lst, mask: [x for x, m in zip(lst, mask) if m]
     aggr_fields = ("agree", "share", "comment")
     for ts in tqdm(range(min_timestamp, max_timestamp, interval_ms)):
@@ -182,6 +192,8 @@ def populate_new_collections(db_sites, article_placement):
                         aggr[k] = aggr[k] + v
 
         for aid, item in article_aggregation.items():
+            item["id"] = f"br{be_read_id.incr()}"
+            # semantically, (aid, timestamp) is unique
             item["aid"] = aid
             item["timestamp"] = ts
 
@@ -189,6 +201,7 @@ def populate_new_collections(db_sites, article_placement):
                 db_sites[site]["be_read"].insert_one(item)
 
     # populate popular_rank collection
+    popular_rank_id = IdCounter()
     top_k = 5
     query_site = "dbms1"  # hard-coded, dbms1 has full `be_read` collection
     be_read_coll = db_sites[query_site]["be_read"]
@@ -213,6 +226,7 @@ def populate_new_collections(db_sites, article_placement):
             article_read_nums = [t[1] for t in article_info[:top_k]]
 
             item = {
+                "id": f"pr{popular_rank_id.incr()}",
                 "timestamp": ub,
                 "temporalGranularity": gran_str,
                 "articleAidList": article_aids,
