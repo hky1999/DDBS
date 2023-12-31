@@ -471,6 +471,89 @@ def fetch_article_details(hdfs: hdfs.Client, article):
     return details
 
 
+def insert_single_item(handles, table_name, item, id_key):
+    assert isinstance(item, dict)
+    item.pop("_id", None)
+    if id_key is not None:
+        assert id_key in item
+        r = query_single_table_cached(handles, table_name, item[id_key], id_key)
+        if len(r) > 0:
+            raise ValueError("duplicate id")
+    
+    derived_rule = config.derived_sharding_rules.get(table_name)
+    if derived_rule is not None:
+        local_key, shard_table_name, foreign_key = derived_rule
+        assert local_key in item
+        r = query_single_table_cached(handles, shard_table_name,
+                                      {foreign_key: item[local_key]}, foreign_key)
+        assert len(r) == 1
+        shard_item = r[0]
+    else:
+        # regular sharding
+        shard_table_name = table_name
+        shard_item = item
+    
+    sharding_rule = config.sharding_rules.get(shard_table_name)
+    if sharding_rule is not None:
+        shard_key, location_map = sharding_rule
+        assert shard_key in shard_item
+        assert shard_item[shard_key] in location_map
+        locations = location_map[shard_item[shard_key]]
+    else:
+        # default behavior: each db site hold a replica
+        locations = [name for name in config.component_names if name.startswith('dbms')]
+    
+    for dbms, cache in config.dbms_nodes:
+        # invalidate cache
+        if id_key is not None:
+            handles[cache].hdel(table_name, item[id_key])
+        handles[cache].delete(table_name + "_query")
+        if dbms in locations:
+            handles[dbms][table_name].insert_one(item)
+
+
+def update_single_item(handles, table_name, new_item, id_key):
+    assert isinstance(new_item, dict)
+    assert id_key is not None and id_key in new_item
+    new_item.pop("_id", None)
+
+    item_id = new_item[id_key]
+    r = query_single_table_cached(handles, table_name, item_id, id_key)
+    if len(r) != 1:
+        raise ValueError("trying to update multiple documents / no match")
+    old_item = r[0]
+
+    if table_name in config.derived_sharding_rules:
+        raise NotImplementedError() # disallow updates for now
+    
+    sharding_rule = config.sharding_rules.get(table_name)
+    if sharding_rule is not None:
+        shard_key, location_map = sharding_rule
+        assert shard_key in new_item
+        if new_item[shard_key] != old_item[shard_key]:
+            raise NotImplementedError("cannot modify shard field")
+
+        locations = location_map[old_item[shard_key]]
+    else:
+        # default behavior: each db site hold a replica
+        locations = [name for name in config.component_names if name.startswith('dbms')]
+    
+    for dbms, cache in config.dbms_nodes:
+        # invalidate cache
+        handles[cache].hdel(table_name, item_id)
+        handles[cache].delete(table_name + "_query")
+        if dbms in locations:
+            handles[dbms][table_name].replace_one({id_key: item_id}, new_item)
+
+
+def remove_items(handles, table_name, condition):
+    for dbms, cache in config.dbms_nodes:
+        # remove all cache
+        handles[cache].delete(table_name)
+        handles[cache].delete(table_name + "_query")
+        handles[dbms][table_name].delete_many(condition)
+
+
 def convert_object_id(obj):
     # by default ObjectId is not JSON serializable
     # this function recursively converts ObjectId values in `obj` to their string forms
@@ -576,4 +659,7 @@ if __name__ == "__main__":
         init_database_tables(handles)
         init_hdfs_content(handles["hdfs"])
 
-    DDBS.run(debug="true", host="127.0.0.1", port="23333")
+    #DDBS.run(debug="true", host="127.0.0.1", port="23333")
+        
+    from IPython import embed
+    embed()
