@@ -456,9 +456,9 @@ def insert_single_item(handles, table_name, item, id_key):
     item.pop("_id", None)
     if id_key is not None:
         assert id_key in item
-        # r = query_single_table_cached(handles, table_name, item[id_key], id_key)
-        # if len(r) > 0:
-        #     raise ValueError("duplicate id")
+        r = query_single_table_cached(handles, table_name, item[id_key], id_key)
+        if len(r) > 0:
+            raise ValueError("duplicate id")
 
     derived_rule = config.derived_sharding_rules.get(table_name)
     if derived_rule is not None:
@@ -572,14 +572,16 @@ def ddbs_get_all_users():
 
 @DDBS.route("/user/<int:uid>", methods=["GET", "POST"])
 def ddbs_get_user(uid):
-    users = query_single_table_cached(handles, "user", {"uid": str(uid)}, "uid")
+    users = query_single_table_cached(handles, "user", uid, "uid")
     if request.method == "GET":
         return users
     elif request.method == "POST":
+        user_transforms = to_int_transforms(["timestamp", "uid", "obtainedCredits"])
+        user_item = map_document(dict(request.form), user_transforms)
         if len(users) > 0:
-            update_single_item(handles, "user", dict(request.form), "uid")
+            update_single_item(handles, "user", user_item, "uid")
         else:
-            insert_single_item(handles, "user", dict(request.form), "uid")
+            insert_single_item(handles, "user", user_item, "uid")
         return ""
     return ""
 
@@ -634,6 +636,16 @@ def ddbs_get_status():
     return status_list
 
 
+@DDBS.route("/flush_cache", methods=["POST"])
+def ddbs_flush_cache():
+    for dbms, cache in config.dbms_nodes:
+        coll_names = handles[dbms].list_collection_names()
+        for name in coll_names:
+            handles[cache].delete(name)
+            handles[cache].delete(name + "_query")
+    return ""
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -651,5 +663,5 @@ if __name__ == "__main__":
 
     # DDBS.run(debug="true", host="127.0.0.1", port="23333")
 
-    # from IPython import embed
-    # embed()
+    from IPython import embed
+    embed()

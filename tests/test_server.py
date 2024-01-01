@@ -34,6 +34,7 @@ def test_get_user_read(client):
 
 
 def test_set_user(client):
+    # resp = client.post("/flush_cache")
     resp = client.post(
         "/user/12345",
         data={
