@@ -21,7 +21,7 @@ db_generation = "db-generation"
 class IdCounter:
     def __init__(self):
         self.v = 0
-    
+
     def incr(self) -> int:
         self.v += 1
         return self.v
@@ -267,12 +267,13 @@ def init_hdfs_content(client: hdfs.Client):
 
     total_files = sum(len(files) for path, dirs, files in os.walk(local_path))
     with tqdm(range(total_files)) as t:
+
         def progress(path, n):
             if n == -1:
                 t.update(1)
 
         client.upload(
-            hdfs_path=hdfs_path, 
+            hdfs_path=hdfs_path,
             local_path=local_path,
             overwrite=True,
             cleanup=True,
@@ -297,24 +298,24 @@ def query_single_table_cached(handles, table_name, condition=None, id_key="_id")
     # cache is not used when doing full table retrieval
     if condition is None:
         return query_single_table_direct(handles, table_name, condition, id_key)
-    
+
     assert isinstance(condition, (int, str, dict))
     # int/str: get by id, dict: complex query
-    if not isinstance(condition, dict): # id query
-        assert id_key != "_id" # TODO: raise exception instead
+    if not isinstance(condition, dict):  # id query
+        assert id_key != "_id"  # TODO: raise exception instead
         redis_hash_key = table_name
         redis_hash_field = str(condition)
         condition = {id_key: condition}
-    else: # complex query
+    else:  # complex query
         redis_hash_key = table_name + "_query"
         redis_hash_field = json.dumps(condition)
-    
+
     results = {}
     for dbms, cache in config.dbms_nodes:
         redis = handles[cache]
         cached = redis.hget(redis_hash_key, redis_hash_field)
 
-        if cached != "[]" and cached is not None:
+        if cached is not None:
             local_items = json.loads(cached)
         else:
             local_items = []
@@ -323,7 +324,7 @@ def query_single_table_cached(handles, table_name, condition=None, id_key="_id")
                 local_items.append(item)
             if len(local_items) > 0:
                 redis.hset(redis_hash_key, redis_hash_field, json.dumps(local_items))
-        
+
         for item in local_items:
             results[item[id_key]] = item
     return list(results.values())
@@ -440,7 +441,7 @@ def fetch_article_details(hdfs: hdfs.Client, article):
     aid = article["aid"]
     path_prefix = f"/data/articles/article{aid}/"
     for field in fields:
-        for filename in article[field].split(','):
+        for filename in article[field].split(","):
             if len(filename) == 0:
                 continue
             with hdfs.read(os.path.join(path_prefix, filename)) as reader:
@@ -458,19 +459,21 @@ def insert_single_item(handles, table_name, item, id_key):
         # r = query_single_table_cached(handles, table_name, item[id_key], id_key)
         # if len(r) > 0:
         #     raise ValueError("duplicate id")
-    
+
     derived_rule = config.derived_sharding_rules.get(table_name)
     if derived_rule is not None:
         local_key, shard_table_name, foreign_key = derived_rule
         assert local_key in item
-        r = query_single_table_cached(handles, shard_table_name,
-                                      {foreign_key: item[local_key]}, foreign_key)
+        r = query_single_table_cached(
+            handles, shard_table_name, {foreign_key: item[local_key]}, foreign_key
+        )
         assert len(r) == 1
         shard_item = r[0]
     else:
         # regular sharding
         shard_table_name = table_name
         shard_item = item
+
     sharding_rule = config.sharding_rules.get(shard_table_name)
     if sharding_rule is not None:
         shard_key, location_map = sharding_rule
@@ -479,14 +482,15 @@ def insert_single_item(handles, table_name, item, id_key):
         locations = location_map[shard_item[shard_key]]
     else:
         # default behavior: each db site hold a replica
-        locations = [name for name in config.component_names if name.startswith('dbms')]
-    
+        locations = [name for name in config.component_names if name.startswith("dbms")]
+
     for dbms, cache in config.dbms_nodes:
         # invalidate cache
         if id_key is not None:
             handles[cache].hdel(table_name, item[id_key])
         handles[cache].delete(table_name + "_query")
         if dbms in locations:
+            # print("insert OK", dbms, table_name, item)
             handles[dbms][table_name].insert_one(item)
 
 
@@ -502,8 +506,8 @@ def update_single_item(handles, table_name, new_item, id_key):
     old_item = r[0]
 
     if table_name in config.derived_sharding_rules:
-        raise NotImplementedError() # disallow updates for now
-    
+        raise NotImplementedError()  # disallow updates for now
+
     sharding_rule = config.sharding_rules.get(table_name)
     if sharding_rule is not None:
         shard_key, location_map = sharding_rule
@@ -514,8 +518,8 @@ def update_single_item(handles, table_name, new_item, id_key):
         locations = location_map[old_item[shard_key]]
     else:
         # default behavior: each db site hold a replica
-        locations = [name for name in config.component_names if name.startswith('dbms')]
-    
+        locations = [name for name in config.component_names if name.startswith("dbms")]
+
     for dbms, cache in config.dbms_nodes:
         # invalidate cache
         handles[cache].hdel(table_name, item_id)
@@ -568,20 +572,17 @@ def ddbs_get_all_users():
 
 @DDBS.route("/user/<int:uid>", methods=["GET", "POST"])
 def ddbs_get_user(uid):
-    users = query_single_table_cached(handles, "user", {"uid": uid}, "uid")
-    print(users)
+    users = query_single_table_cached(handles, "user", {"uid": str(uid)}, "uid")
     if request.method == "GET":
-        print("get")
         return users
     elif request.method == "POST":
         if len(users) > 0:
-            print("update")
             update_single_item(handles, "user", dict(request.form), "uid")
         else:
-            print("insert")
             insert_single_item(handles, "user", dict(request.form), "uid")
         return ""
     return ""
+
 
 @DDBS.route("/articles", methods=["GET"])
 def ddbs_get_all_articles():
@@ -607,7 +608,7 @@ def ddbs_get_popular_rank(timestamp_ms):
     # NOTE: resource files are base64 encoded and they are large
     for temporal_gran, article_info in popular_info.items():
         for item in article_info:
-            item["details"] = fetch_article_details(handles['hdfs'], item["article"])
+            item["details"] = fetch_article_details(handles["hdfs"], item["article"])
     return popular_info
 
 
@@ -616,20 +617,20 @@ def ddbs_get_status():
     status_list = []
     for site, cache in config.dbms_nodes:
         db, kv = handles[site], handles[cache]
-        
+
         collection_sizes = {}
         cache_sizes = {}
         for coll_name in db.list_collection_names():
             collection_sizes[coll_name] = db[coll_name].count_documents({})
             if not coll_name.startswith("tmp"):
                 item_cache_key, query_cache_key = coll_name, coll_name + "_query"
-                cache_sizes[item_cache_key] = kv.hlen(item_cache_key) # item cache
-                cache_sizes[query_cache_key] = kv.hlen(query_cache_key) # query cache
+                cache_sizes[item_cache_key] = kv.hlen(item_cache_key)  # item cache
+                cache_sizes[query_cache_key] = kv.hlen(query_cache_key)  # query cache
 
         status = dict(site=site, collections=collection_sizes, caches=cache_sizes)
         status_list.append(status)
 
-    #print(json.dumps(status_list, indent=4, separators=(",", ": ")))
+    # print(json.dumps(status_list, indent=4, separators=(",", ": ")))
     return status_list
 
 
@@ -648,7 +649,7 @@ if __name__ == "__main__":
         init_database_tables(handles)
         init_hdfs_content(handles["hdfs"])
 
-    #DDBS.run(debug="true", host="127.0.0.1", port="23333")
-        
-    from IPython import embed
-    embed()
+    # DDBS.run(debug="true", host="127.0.0.1", port="23333")
+
+    # from IPython import embed
+    # embed()
