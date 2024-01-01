@@ -10,7 +10,7 @@ import hdfs
 import base64
 
 from tqdm import tqdm
-from flask import Flask
+from flask import Flask, request
 from bson.objectid import ObjectId
 
 from server import config
@@ -261,27 +261,6 @@ def init_database_tables(handles):
 
 
 def init_hdfs_content(client: hdfs.Client):
-    '''
-    client.makedirs("/data")
-    client.makedirs("/data/image")
-    client.makedirs("/data/video")
-    client.upload(
-        hdfs_path="/data/image",
-        local_path=os.path.join(db_generation, "image/"),
-        overwrite=True,
-        cleanup=True,
-        n_threads=8,
-        chunk_size=2**20,
-    )
-    print(client.list("/data/image"))
-    client.upload(
-        hdfs_path="/data/video",
-        local_path=os.path.join(db_generation, "video/"),
-        overwrite=True,
-        cleanup=True,
-    )
-    print(client.list("/data/video"))
-    '''
     hdfs_path = "/data/articles"
     local_path = os.path.join(db_generation, "articles/")
     client.makedirs(hdfs_path)
@@ -334,16 +313,16 @@ def query_single_table_cached(handles, table_name, condition=None, id_key="_id")
     for dbms, cache in config.dbms_nodes:
         redis = handles[cache]
         cached = redis.hget(redis_hash_key, redis_hash_field)
-        
-        if cached is not None:
+
+        if cached != "[]" and cached is not None:
             local_items = json.loads(cached)
         else:
             local_items = []
             for item in handles[dbms][table_name].find(condition):
                 item["_id"] = str(item["_id"])
                 local_items.append(item)
-        
-            redis.hset(redis_hash_key, redis_hash_field, json.dumps(local_items))
+            if len(local_items) > 0:
+                redis.hset(redis_hash_key, redis_hash_field, json.dumps(local_items))
         
         for item in local_items:
             results[item[id_key]] = item
@@ -476,9 +455,9 @@ def insert_single_item(handles, table_name, item, id_key):
     item.pop("_id", None)
     if id_key is not None:
         assert id_key in item
-        r = query_single_table_cached(handles, table_name, item[id_key], id_key)
-        if len(r) > 0:
-            raise ValueError("duplicate id")
+        # r = query_single_table_cached(handles, table_name, item[id_key], id_key)
+        # if len(r) > 0:
+        #     raise ValueError("duplicate id")
     
     derived_rule = config.derived_sharding_rules.get(table_name)
     if derived_rule is not None:
@@ -492,7 +471,6 @@ def insert_single_item(handles, table_name, item, id_key):
         # regular sharding
         shard_table_name = table_name
         shard_item = item
-    
     sharding_rule = config.sharding_rules.get(shard_table_name)
     if sharding_rule is not None:
         shard_key, location_map = sharding_rule
@@ -588,11 +566,22 @@ def ddbs_get_all_users():
     return users
 
 
-@DDBS.route("/user/<int:uid>", methods=["GET"])
+@DDBS.route("/user/<int:uid>", methods=["GET", "POST"])
 def ddbs_get_user(uid):
-    users = query_single_table_cached(handles, "user", uid, "uid")
-    return users
-
+    users = query_single_table_cached(handles, "user", {"uid": uid}, "uid")
+    print(users)
+    if request.method == "GET":
+        print("get")
+        return users
+    elif request.method == "POST":
+        if len(users) > 0:
+            print("update")
+            update_single_item(handles, "user", dict(request.form), "uid")
+        else:
+            print("insert")
+            insert_single_item(handles, "user", dict(request.form), "uid")
+        return ""
+    return ""
 
 @DDBS.route("/articles", methods=["GET"])
 def ddbs_get_all_articles():
