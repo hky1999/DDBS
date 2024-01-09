@@ -1,0 +1,29 @@
+# flush cache first
+pytest -s tests/test_server.py -k flush_cache
+
+# query user by id
+pytest -s tests/test_server.py -k get_user_by_id
+
+# query article by id
+%time r = query_single_table_cached(handles, 'article', 100, 'aid')
+
+# complex article query
+%time r = query_single_table_cached(handles, 'article', {'$or': [{'category': 'science'}, {'language': 'en'}]}, 'aid')
+
+# slow complex query
+%time r = query_single_table_cached(handles, 'read', {'$and': [{'commentOrNot': 1}, {'shareOrNot': 0}, {'readTimeLength': {'$lt': 50}}]}, 'id')
+
+# query users' read
+%time r = query_user_read(handles, {'uid': 4})
+
+# query top-5 popular articles (without details)
+%time r = query_popular_articles(handles, 1508025600000)
+
+# query top-5 popular articles with details
+pytest -s tests/test_server.py -k get_popular_rank
+
+# query a user which might not exist
+%time r = query_single_table_cached(handles, 'user', 12345, 'uid')
+
+# update user information 
+pytest -s tests/test_server.py -k set_user

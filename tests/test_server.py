@@ -2,6 +2,8 @@
 # encoding: utf-8
 
 import pytest
+import json
+import base64
 
 from server.server import DDBS
 
@@ -22,15 +24,16 @@ def test_response(client):
     assert resp.data == b"DDBS"
 
 
-def test_get_user(client):
+def test_get_user_by_id(client):
     # resp = client.get("/users")
     resp = client.get("/user/4")  # cold
     resp = client.get("/user/4")
+    print(resp.data)
 
 
 def test_get_user_read(client):
     resp = client.get("/user_read/3")
-    # print(resp.data)
+    print(resp.data)
 
 
 def test_set_user(client):
@@ -80,5 +83,22 @@ def test_set_user(client):
 
 
 def test_get_popular_rank(client):
-    resp = client.get("/popular/1506432287000")
-    # print(resp.data)
+    resp = client.get("/popular/1508025600000")
+    d = json.loads(str(resp.data, encoding='utf-8'))
+    item = d['weekly'][0]
+    details = item.pop('details')
+    print(details.keys())
+
+    for filename in details:
+        if not filename.endswith('.txt'):
+            continue
+        encoded = details[filename]
+        print(encoded)
+        decoded = base64.decodebytes(bytes(encoded, encoding='utf-8'))
+        print(decoded)
+
+
+def test_flush_cache(client):
+    resp = client.post("/flush_cache")
+    resp = client.get("/status")
+    print(resp.data)

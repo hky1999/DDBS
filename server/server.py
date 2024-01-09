@@ -661,7 +661,7 @@ if __name__ == "__main__":
         init_database_tables(handles)
         init_hdfs_content(handles["hdfs"])
 
-    # DDBS.run(debug="true", host="127.0.0.1", port="23333")
+    DDBS.run(debug="true", host="127.0.0.1", port="23333")
 
-    from IPython import embed
-    embed()
+    # from IPython import embed
+    # embed()
