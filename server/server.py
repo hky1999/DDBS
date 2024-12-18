@@ -13,7 +13,7 @@ from tqdm import tqdm
 from flask import Flask, request
 from bson.objectid import ObjectId
 
-from server import config
+from . import config
 
 db_generation = "db-generation"
 
@@ -41,6 +41,10 @@ def init_hdfs(host, port):
 
 
 def init():
+    '''
+    Initialize handles for all components: cache, dbms, storage
+    Use redis for cache, mongodb for dbms, hdfs for storage
+    '''
     handles = {}
     for name in config.component_names:
         host, port = config.component_addresses[name]
@@ -57,16 +61,27 @@ def init():
 
 
 def map_document(doc: dict, mapping: dict):
+    '''
+    Apply mapping to a document.
+    If a field is not in the mapping, it is left unchanged.
+    '''
     return {k: (mapping[k](v) if k in mapping else v) for k, v in doc.items()}
 
 
 def to_int_transforms(fields: list[str]):
+    '''
+    Return a dict that maps field names to int conversion function
+    '''
     return {k: int for k in fields}
 
 
 def init_single_collection(
     table_name, index_key, db_sites, datafile_path, field_transforms
 ):
+    '''
+    Shard a collection and populate it with data from a file
+    Will be used to initialize user and article collections
+    '''
     for db in db_sites.values():
         db.drop_collection(table_name)
         db[table_name].create_index(index_key)
@@ -89,6 +104,9 @@ def init_single_collection(
 
 
 def init_read_collection(db_sites, datafile_path, user_placement):
+    '''
+    Populate read collection with data from a file
+    '''
     for db in db_sites.values():
         db.drop_collection("read")
         # create indexes
@@ -118,6 +136,9 @@ def init_read_collection(db_sites, datafile_path, user_placement):
 
 
 def populate_new_collections(db_sites, article_placement):
+    '''
+    Populate be-read and popular_rank collections based on read collection
+    '''
     for db in db_sites.values():
         db.drop_collection("be_read")
         db.drop_collection("popular_rank")
@@ -240,6 +261,13 @@ def populate_new_collections(db_sites, article_placement):
 
 
 def init_database_tables(handles):
+    '''
+    Initialize database tables for dbms on different sites with data from json files
+    
+    init_single_collection: user, article
+    init_read_collection(user): read
+    populate_new_collections(article): be_read, popular_rank
+    '''
     dbs = {name: handle for name, handle in handles.items() if name.startswith("dbms")}
 
     user_transforms = to_int_transforms(["timestamp", "uid", "obtainedCredits"])
@@ -554,6 +582,9 @@ def convert_object_id(obj):
                 obj[k] = convert_object_id(v)
     return obj
 
+'''
+Below are the RESTful API endpoints
+'''
 
 DDBS = Flask(__name__)
 handles = init()
@@ -566,12 +597,19 @@ def ddbs_get_home():
 
 @DDBS.route("/users", methods=["GET"])
 def ddbs_get_all_users():
+    '''
+    GET: get all users, bypassing cache
+    '''
     users = query_single_table_direct(handles, "user", None, "uid")
     return users
 
 
 @DDBS.route("/user/<int:uid>", methods=["GET", "POST"])
 def ddbs_get_user(uid):
+    '''
+    GET: get user info, using cache
+    POST: update user info with form data (timestamp, uid, obtainedCredits) converted to int, using cache
+    '''
     users = query_single_table_cached(handles, "user", uid, "uid")
     if request.method == "GET":
         return users
@@ -588,24 +626,40 @@ def ddbs_get_user(uid):
 
 @DDBS.route("/articles", methods=["GET"])
 def ddbs_get_all_articles():
+    '''
+    GET: get all articles, bypassing cache
+    '''
     articles = query_single_table_direct(handles, "article", None, "aid")
     return articles
 
 
 @DDBS.route("/article/<int:aid>", methods=["GET"])
 def ddbs_get_article(aid):
+    '''
+    GET: get article info, using cache
+    '''
     articles = query_single_table_cached(handles, "article", aid, "aid")
     return articles
 
 
 @DDBS.route("/user_read/<int:uid>", methods=["GET"])
 def ddbs_get_user_read(uid):
+    '''
+    GET: get user read history, using cache
+
+    Complex query: join user, read, article
+    '''
     user_reads = query_user_read(handles, {"uid": uid})
     return convert_object_id(user_reads)
 
 
 @DDBS.route("/popular/<int:timestamp_ms>", methods=["GET"])
 def ddbs_get_popular_rank(timestamp_ms):
+    '''
+    GET: get popular articles, using cache
+    
+    First query information from be-read collection, then get article details(text, image, video) from HDFS
+    '''
     popular_info = query_popular_articles(handles, timestamp_ms)
     # NOTE: resource files are base64 encoded and they are large
     for temporal_gran, article_info in popular_info.items():
@@ -616,6 +670,9 @@ def ddbs_get_popular_rank(timestamp_ms):
 
 @DDBS.route("/status", methods=["GET"])
 def ddbs_get_status():
+    '''
+    GET: get size of each collection and cache, excluding temporary collections
+    '''
     status_list = []
     for site, cache in config.dbms_nodes:
         db, kv = handles[site], handles[cache]
@@ -657,9 +714,13 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    print("Successfully init handles.")
+
     if args.init:
         init_database_tables(handles)
         init_hdfs_content(handles["hdfs"])
+        print("Successfully init databases.")
+
 
     DDBS.run(debug="true", host="127.0.0.1", port="23333")
 
