@@ -7,7 +7,7 @@ component_addresses = {
     "dbms0": (localhost, 20001),
     "cache1": (localhost, 20002),
     "dbms1": (localhost, 20003),
-    "hdfs": (localhost, 9870),
+    "hdfs": (localhost, 9866),
 }
 
 dbms_nodes = (
