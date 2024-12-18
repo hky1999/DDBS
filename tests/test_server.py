@@ -4,6 +4,11 @@
 import pytest
 import json
 import base64
+import sys
+import os
+
+# Add the path to the folder server where server.py is located
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from server.server import DDBS
 
